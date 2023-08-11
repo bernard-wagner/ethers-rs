@@ -230,6 +230,25 @@ impl Ipc {
         windows,
         doc = r"Note: the path must be the fully qualified, like: `\\.\pipe\<name>`."
     )]
+    pub fn connect_sync(path: impl AsRef<Path>) -> Result<Self, IpcError> {
+        let id = Arc::new(AtomicU64::new(1));
+        let (request_tx, request_rx) = mpsc::unbounded();
+
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+
+        let stream = rt.block_on(Stream::connect(path))?;
+
+        spawn_ipc_server(stream, request_rx);
+
+        Ok(Self { id, request_tx })
+    }
+
+    #[cfg_attr(unix, doc = "Connects to the Unix socket at the provided path.")]
+    #[cfg_attr(windows, doc = "Connects to the named pipe at the provided path.\n")]
+    #[cfg_attr(
+        windows,
+        doc = r"Note: the path must be the fully qualified, like: `\\.\pipe\<name>`."
+    )]
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self, IpcError> {
         let id = Arc::new(AtomicU64::new(1));
         let (request_tx, request_rx) = mpsc::unbounded();
@@ -351,7 +370,7 @@ impl Shared {
             let read = reader.read_buf(&mut buf).await?;
             if read == 0 {
                 // eof, socket was closed
-                return Err(IpcError::ServerExit)
+                return Err(IpcError::ServerExit);
             }
 
             // parse the received bytes into 0-n jsonrpc messages
@@ -427,7 +446,7 @@ impl Shared {
             Some(tx) => tx,
             None => {
                 tracing::warn!(%id, "no pending request exists for the response ID");
-                return
+                return;
             }
         };
 
@@ -448,7 +467,7 @@ impl Shared {
                     id = ?params.subscription,
                     "no subscription exists for the notification ID"
                 );
-                return
+                return;
             }
         };
 
@@ -530,9 +549,33 @@ mod tests {
         (ipc, geth)
     }
 
+    fn connect_sync() -> (Ipc, GethInstance) {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.into_temp_path().to_path_buf();
+        let geth = Geth::new().block_time(1u64).ipc_path(&path).spawn();
+
+        // [Windows named pipes](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipes)
+        // are located at `\\<machine_address>\pipe\<pipe_name>`.
+        #[cfg(windows)]
+        let path = format!(r"\\.\pipe\{}", path.display());
+        let ipc = Ipc::connect_sync(path).unwrap();
+
+        (ipc, geth)
+    }
+
     #[tokio::test]
     async fn request() {
         let (ipc, _geth) = connect().await;
+
+        let block_num: U256 = ipc.request("eth_blockNumber", ()).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let block_num2: U256 = ipc.request("eth_blockNumber", ()).await.unwrap();
+        assert!(block_num2 > block_num);
+    }
+
+    #[tokio::test]
+    async fn request_sync() {
+        let (ipc, _geth) = connect_sync();
 
         let block_num: U256 = ipc.request("eth_blockNumber", ()).await.unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
