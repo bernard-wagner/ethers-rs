@@ -2,8 +2,9 @@
 //! with an exponential backoff.
 
 use super::{common::JsonRpcError, http::ClientError};
-use crate::{errors::ProviderError, JsonRpcClient};
+use crate::{errors::ProviderError, JsonRpcClient, PubsubClient};
 use async_trait::async_trait;
+use ethers_core::types::U256;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fmt::Debug,
@@ -355,6 +356,30 @@ where
     }
 }
 
+// Allow the RetryClient to be used as a PubsubClient
+impl<T> PubsubClient for RetryClient<T>
+where
+    T: JsonRpcClient + PubsubClient + 'static,
+    T::Error: Sync + Send + 'static,
+{
+    type NotificationStream = <T as PubsubClient>::NotificationStream;
+
+    fn subscribe<U: Into<U256>>(
+        &self,
+        id: U,
+    ) -> Result<Self::NotificationStream, RetryClientError> {
+        PubsubClient::subscribe(&self.inner, id).map_err(|e| {
+            RetryClientError::ProviderError(ProviderError::JsonRpcClientError(Box::new(e)))
+        })
+    }
+
+    fn unsubscribe<U: Into<U256>>(&self, id: U) -> Result<(), RetryClientError> {
+        PubsubClient::unsubscribe(&self.inner, id).map_err(|e| {
+            RetryClientError::ProviderError(ProviderError::JsonRpcClientError(Box::new(e)))
+        })
+    }
+}
+
 /// Implements [RetryPolicy] that will retry requests that errored with
 /// status code 429 i.e. TOO_MANY_REQUESTS
 ///
@@ -395,6 +420,7 @@ impl RetryPolicy<ClientError> for HttpRateLimitRetryPolicy {
             ClientError::ReqwestError(err) => {
                 err.status() == Some(http::StatusCode::TOO_MANY_REQUESTS)
             }
+            ClientError::ProviderError(_) => false,
             ClientError::JsonRpcError(err) => should_retry_json_rpc_error(err),
             ClientError::SerdeJson { text, .. } => {
                 // some providers send invalid JSON RPC in the error case (no `id:u64`), but the

@@ -1,10 +1,13 @@
 // Code adapted from: https://github.com/althea-net/guac_rs/tree/master/web3/src/jsonrpc
 
 use super::common::{Authorization, JsonRpcError, Request, Response};
-use crate::{errors::ProviderError, JsonRpcClient};
+use crate::{errors::ProviderError, JsonRpcClient, PubsubClient};
 use async_trait::async_trait;
+use ethers_core::types::U256;
+use futures_channel::mpsc;
 use reqwest::{header::HeaderValue, Client, Error as ReqwestError};
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::value::RawValue;
 use std::{
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
@@ -52,12 +55,17 @@ pub enum ClientError {
         /// The contents of the HTTP response that could not be deserialized
         text: String,
     },
+
+    /// Thrown if the request was not successful
+    #[error(transparent)]
+    ProviderError(#[from] ProviderError),
 }
 
 impl From<ClientError> for ProviderError {
     fn from(src: ClientError) -> Self {
         match src {
             ClientError::ReqwestError(err) => ProviderError::HTTPError(err),
+            ClientError::ProviderError(err) => err,
             _ => ProviderError::JsonRpcClientError(Box::new(src)),
         }
     }
@@ -118,6 +126,18 @@ impl JsonRpcClient for Provider {
             .map_err(|err| ClientError::SerdeJson { err, text: raw.to_string() })?;
 
         Ok(res)
+    }
+}
+
+impl PubsubClient for Provider {
+    type NotificationStream = mpsc::UnboundedReceiver<Box<RawValue>>;
+
+    fn subscribe<T: Into<U256>>(&self, _: T) -> Result<Self::NotificationStream, Self::Error> {
+        Err(ClientError::ProviderError(ProviderError::UnsupportedRPC))
+    }
+
+    fn unsubscribe<T: Into<U256>>(&self, _: T) -> Result<(), Self::Error> {
+        Err(ClientError::ProviderError(ProviderError::UnsupportedRPC))
     }
 }
 
