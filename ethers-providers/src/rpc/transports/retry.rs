@@ -420,7 +420,6 @@ impl RetryPolicy<ClientError> for HttpRateLimitRetryPolicy {
             ClientError::ReqwestError(err) => {
                 err.status() == Some(http::StatusCode::TOO_MANY_REQUESTS)
             }
-            ClientError::ProviderError(_) => false,
             ClientError::JsonRpcError(err) => should_retry_json_rpc_error(err),
             ClientError::SerdeJson { text, .. } => {
                 // some providers send invalid JSON RPC in the error case (no `id:u64`), but the
